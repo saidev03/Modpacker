@@ -255,27 +255,103 @@ function removeMod(index) {
     updateAddedList();
 }
 
-// GESTIÓN ROBUSTA DE ANEXOS / OVERRIDES (ARCHIVOS Y CARPETAS LOCALES)
-function handleFiles(files) {
-    for (let file of files) {
-        let relativePath = file.webkitRelativePath || file.name;
+// =========================================================================
+// MOTOR INTELIGENTE DE LIMPIEZA Y REORGANIZACIÓN DE OVERRIDES
+// =========================================================================
 
-        // Normalizar separadores de directorio a "/"
-        relativePath = relativePath.replace(/\\/g, '/');
+// Reglas de archivos/carpetas a ignorar (Basura, logs, executables, temporales)
+const BLACKLISTED_PATTERNS = [
+    // Logs y temporales
+    /\/logs\//i, /\.log$/i, /\.log\.gz$/i, /\/crash-reports\//i, /\/cache\//i, /\/backups\//i, /\.tmp$/i,
+    // Basura de Sistemas Operativos
+    /\.ds_store$/i, /thumbs\.db$/i, /\/\.git\//i, /\/\.vscode\//i, /\/\.idea\//i,
+    // Ejecutables y scripts de instalación que no deben ir dentro de un modpack
+    /\.exe$/i, /\.bat$/i, /\.cmd$/i, /\.sh$/i, /\.msi$/i,
+    // Perfiles y metadata pesada de Launchers
+    /launcher_profiles\.json$/i, /tlauncher.*\.json$/i, /usercache\.json$/i, /usernamecache\.json$/i
+];
 
-        // Si es un archivo .jar suelto sin carpeta previa, rutarlo a mods/
-        if (file.name.endsWith('.jar') && !relativePath.includes('/')) {
-            relativePath = `mods/${file.name}`;
-        }
+function sanitizeAndRoutePath(rawPath, fileName) {
+    // Normalizar separadores de ruta a formato Unix "/"
+    let path = rawPath.replace(/\\/g, '/');
 
-        // Evitar duplicados por ruta de archivo
-        if (!localOverrides.some(o => o.path === relativePath)) {
-            localOverrides.push({
-                path: relativePath,
-                file: file
-            });
+    // 1. REGLA DE FILTRADO: Verificar si el archivo está en la lista negra
+    for (const pattern of BLACKLISTED_PATTERNS) {
+        if (pattern.test(path)) {
+            return null; // Omitir este archivo
         }
     }
+
+    // 2. REGLA DE LIMPIEZA DE PREFIX: Remover carpetas contenedoras raíz como ".minecraft/", "overrides/", "MyModpack/"
+    const commonRootFolders = ['/dot-minecraft/', '/.minecraft/', '/overrides/', '/minecraft/'];
+    const lowerPath = '/' + path.toLowerCase();
+
+    for (const root of commonRootFolders) {
+        const rootIdx = lowerPath.indexOf(root);
+        if (rootIdx !== -1) {
+            path = path.substring(rootIdx + root.length);
+            break;
+        }
+    }
+
+    // Si al limpiar quedó un slash inicial, removerlo
+    path = path.replace(/^\/+/, '');
+
+    // 3. REGLA DE RUTEO INTELIGENTE: Si el archivo está en la raíz sin carpeta asignada
+    if (!path.includes('/')) {
+        const nameLower = fileName.toLowerCase();
+
+        // Archivos .jar sueltos -> mods/
+        if (nameLower.endsWith('.jar')) {
+            return `mods/${fileName}`;
+        }
+
+        // Shaders (.zip o .fsh) sueltos -> shaderpacks/
+        if (nameLower.includes('shader') || nameLower.endsWith('.fsh')) {
+            return `shaderpacks/${fileName}`;
+        }
+
+        // Resourcepacks (.zip) sueltos -> resourcepacks/
+        if (nameLower.endsWith('.zip') && !nameLower.includes('config')) {
+            return `resourcepacks/${fileName}`;
+        }
+
+        // Archivos de configuración sueltos (txt, json, toml, cfg, ini) -> config/
+        if (nameLower.endsWith('.toml') || nameLower.endsWith('.cfg') || nameLower.endsWith('.json5') || nameLower.endsWith('.ini')) {
+            return `config/${fileName}`;
+        }
+    }
+
+    return path;
+}
+
+function handleFiles(files) {
+    let addedCount = 0;
+    let skippedCount = 0;
+
+    for (let file of files) {
+        let rawPath = file.webkitRelativePath || file.name;
+        let routedPath = sanitizeAndRoutePath(rawPath, file.name);
+
+        if (!routedPath) {
+            skippedCount++;
+            continue; // Se ignoró por basura o ejecutable inseguro
+        }
+
+        // Evitar duplicados exactos en la lista
+        if (!localOverrides.some(o => o.path === routedPath)) {
+            localOverrides.push({
+                path: routedPath,
+                file: file
+            });
+            addedCount++;
+        }
+    }
+
+    if (skippedCount > 0) {
+        console.log(`[Smart Clean] Se auto-eliminaron ${skippedCount} archivo(s) innecesarios o basuras (logs, .exe, cache, etc.).`);
+    }
+
     updateOverridesList();
 }
 
@@ -292,7 +368,10 @@ function updateOverridesList() {
         const el = document.createElement('div');
         el.className = 'bg-[#161925] px-2.5 py-1.5 rounded-lg border border-gray-800/80 flex justify-between items-center text-xs text-gray-300';
         el.innerHTML = `
-            <span class="truncate font-mono text-[11px] max-w-[220px]" title="${item.path}">${item.path}</span>
+            <div class="flex items-center gap-1.5 overflow-hidden">
+                <span class="text-purple-400 text-[10px] font-bold">[AUTO]</span>
+                <span class="truncate font-mono text-[11px] max-w-[210px]" title="${item.path}">${item.path}</span>
+            </div>
             <button onclick="removeOverride(${index})" class="text-red-400 hover:text-red-300 font-bold ml-2">&times;</button>
         `;
         overridesList.appendChild(el);
@@ -391,7 +470,6 @@ btnExport.addEventListener('click', async () => {
 
         for (const item of localOverrides) {
             try {
-                // Lectura explicita de ArrayBuffer para evitar 'NotFoundError' por referencias perdidas
                 const arrayBuffer = await item.file.arrayBuffer();
                 overridesFolder.file(item.path, arrayBuffer);
                 processedFiles++;
