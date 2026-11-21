@@ -5,6 +5,14 @@ let skippedOverrides = []; // { name: '...', reason: '...' }
 let galleryImages = [];
 let currentImageIndex = 0;
 
+// Mapeo de loaders de UI/búsqueda -> claves válidas en modrinth.index.json -> dependencies
+const LOADER_DEPENDENCY_MAP = {
+    fabric: 'fabric-loader',
+    quilt: 'quilt-loader',
+    forge: 'forge',
+    neoforge: 'neoforge'
+};
+
 // ELEMENTOS DEL DOM
 const searchInput = document.getElementById('search-input');
 const btnSearch = document.getElementById('btn-search');
@@ -262,7 +270,6 @@ function removeMod(index) {
 // MOTOR DE LECTURA RECURSIVA, LIMPIEZA Y ACOMODO INTELIGENTE DE OVERRIDES
 // =========================================================================
 
-// Carpetas oficiales conocidas de una instancia de Minecraft dentro de overrides/
 const KNOWN_MINECRAFT_DIRS = [
     'config',
     'defaultconfigs',
@@ -277,7 +284,6 @@ const KNOWN_MINECRAFT_DIRS = [
     'schematics'
 ];
 
-// Reglas con motivo exacto para explicar qué no se sube y por qué
 const SKIP_RULES = [
     { regex: /(?:^|\/)logs(?:\/|$)|\.log(?:\.gz)?$/i, reason: 'Archivo o carpeta de logs' },
     { regex: /(?:^|\/)crash-reports(?:\/|$)/i, reason: 'Carpeta de crash reports' },
@@ -303,13 +309,11 @@ function evaluateAndRouteFile(file, explicitRelativePath = null) {
 
     const fileName = file.name || rawPath.split('/').pop() || 'archivo';
 
-    // 1. Verificar archivos vacíos
     if (file.size === 0) {
         recordSkipped(rawPath || fileName, 'Archivo vacío (0 bytes)');
         return null;
     }
 
-    // 2. Verificar reglas de exclusión con motivo explícito
     for (const rule of SKIP_RULES) {
         if (rule.regex.test(rawPath) || rule.regex.test(fileName)) {
             recordSkipped(rawPath || fileName, rule.reason);
@@ -317,19 +321,15 @@ function evaluateAndRouteFile(file, explicitRelativePath = null) {
         }
     }
 
-    // 3. Buscar si en algún nivel de la ruta existe una carpeta conocida de Minecraft (config/, resourcepacks/, etc.)
     const parts = rawPath.split('/').filter(Boolean);
     for (let i = 0; i < parts.length; i++) {
         const segmentLower = parts[i].toLowerCase();
         if (KNOWN_MINECRAFT_DIRS.includes(segmentLower)) {
-            // Reconstruir desde la carpeta conocida en adelante
             const normalizedParts = [segmentLower, ...parts.slice(i + 1)];
             return normalizedParts.join('/');
         }
     }
 
-    // 4. Si se subió una carpeta raíz contenedora (ej. "MiPack/options.txt" o ".minecraft/options.txt"),
-    // limpiar carpetas raíz genéricas si el siguiente elemento ya es un archivo o carpeta válida
     const rootWrappers = ['.minecraft', 'dot-minecraft', 'minecraft', 'overrides', 'instance'];
     let cleanedParts = [...parts];
     while (cleanedParts.length > 1 && rootWrappers.includes(cleanedParts[0].toLowerCase())) {
@@ -338,7 +338,6 @@ function evaluateAndRouteFile(file, explicitRelativePath = null) {
 
     let finalPath = cleanedParts.join('/');
 
-    // 5. Si el archivo quedó suelto en la raíz (sin carpeta), acomodarlo según su tipo
     if (!finalPath.includes('/')) {
         const lowerName = fileName.toLowerCase();
 
@@ -377,7 +376,6 @@ function addProcessedFile(file, explicitRelativePath = null) {
     }
 }
 
-// Recorrido recursivo de entradas de carpetas en Drag & Drop (webkitGetAsEntry)
 function traverseEntry(entry, currentPath = '') {
     return new Promise((resolve) => {
         if (!entry) return resolve();
@@ -600,7 +598,10 @@ btnExport.addEventListener('click', async () => {
             }
         };
 
-        indexJson.dependencies[loader] = customLoaderVer || "recommended";
+        // Clave válida de dependencia para Modrinth (.mrpack): fabric-loader, quilt-loader, forge, neoforge
+        const dependencyKey = LOADER_DEPENDENCY_MAP[loader] || loader;
+        indexJson.dependencies[dependencyKey] = customLoaderVer || "recommended";
+
         zip.file("modrinth.index.json", JSON.stringify(indexJson, null, 2));
 
         const overridesFolder = zip.folder("overrides");
