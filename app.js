@@ -1,16 +1,27 @@
+// ESTADO GLOBAL DE LA APLICACIÓN
 let selectedMods = [];
-let galleryImages = []; // Almacena URLs de la galería activa
-let currentImageIndex = 0; // Índice de la foto seleccionada en el lightbox
+let localOverrides = []; // Archivos locales para la carpeta overrides/
+let galleryImages = [];
+let currentImageIndex = 0;
 
-// Elementos del DOM
+// ELEMENTOS DEL DOM
 const searchInput = document.getElementById('search-input');
 const btnSearch = document.getElementById('btn-search');
 const resultsList = document.getElementById('results-list');
+const resultsCount = document.getElementById('results-count');
 const addedList = document.getElementById('added-list');
 const modCount = document.getElementById('mod-count');
 const btnExport = document.getElementById('btn-export');
+const statMods = document.getElementById('stat-mods');
+const statFiles = document.getElementById('stat-files');
 
-// Elementos del Modal de Vista Previa
+// OVERRIDES Y DRAG & DROP
+const dropZone = document.getElementById('drop-zone');
+const fileInputFolder = document.getElementById('file-input-folder');
+const fileInputFiles = document.getElementById('file-input-files');
+const overridesList = document.getElementById('overrides-list');
+
+// MODAL Y LIGHTBOX
 const modal = document.getElementById('preview-modal');
 const closeModal = document.getElementById('close-modal');
 const modalIcon = document.getElementById('modal-icon');
@@ -20,7 +31,6 @@ const modalGallery = document.getElementById('modal-gallery');
 const modalDescription = document.getElementById('modal-description');
 const modalFooter = document.getElementById('modal-footer');
 
-// Elementos del Lightbox (Visor con Teclado)
 const lightbox = document.getElementById('lightbox');
 const closeLightbox = document.getElementById('close-lightbox');
 const lightboxImg = document.getElementById('lightbox-img');
@@ -28,55 +38,64 @@ const prevLightbox = document.getElementById('prev-lightbox');
 const nextLightbox = document.getElementById('next-lightbox');
 const lightboxCounter = document.getElementById('lightbox-counter');
 
-// BUSCAR MODS EN MODRINTH
+// SISTEMA DE PESTAÑAS
+function switchTab(tabName) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+
+    document.getElementById(`tab-btn-${tabName}`).classList.add('active');
+    document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+}
+
+// BÚSQUEDA DE MODS EN MODRINTH API (FABRIC, FORGE, NEOFORGE, QUILT)
 async function searchMods() {
     const query = searchInput.value.trim();
     if (!query) return;
 
-    resultsList.innerHTML = `<div class="text-gray-500 text-sm text-center py-8">Buscando...</div>`;
+    resultsList.innerHTML = `<div class="text-gray-500 text-xs text-center py-8">Buscando mods compatibles...</div>`;
 
     const mcVersion = document.getElementById('mc-version').value;
     const loader = document.getElementById('loader-type').value;
 
     try {
-        const url = `https://api.modrinth.com/v2/search?query=${encodeURIComponent(query)}&facets=[["categories:${loader}"],["versions:${mcVersion}"],["project_type:mod"]]&limit=10`;
+        const url = `https://api.modrinth.com/v2/search?query=${encodeURIComponent(query)}&facets=[["categories:${loader}"],["versions:${mcVersion}"],["project_type:mod"]]&limit=12`;
         const response = await fetch(url);
         const data = await response.json();
+        
+        resultsCount.innerText = `${data.hits.length} hallados`;
         displayResults(data.hits);
     } catch (error) {
-        resultsList.innerHTML = `<div class="text-red-500 text-sm text-center py-8">Error al buscar mods.</div>`;
+        resultsList.innerHTML = `<div class="text-red-500 text-xs text-center py-8">Error al conectar con la API de Modrinth.</div>`;
     }
 }
 
 // RENDERIZAR RESULTADOS DE BÚSQUEDA
 function displayResults(mods) {
     if (mods.length === 0) {
-        resultsList.innerHTML = `<div class="text-gray-500 text-sm text-center py-8">No se encontraron mods compatibles.</div>`;
+        resultsList.innerHTML = `<div class="text-gray-500 text-xs text-center py-8">No se encontraron mods para la combinación seleccionada.</div>`;
         return;
     }
 
     resultsList.innerHTML = '';
     mods.forEach(mod => {
         const item = document.createElement('div');
-        item.className = 'mod-card bg-[#161925] p-3 rounded-xl border border-gray-800 flex justify-between items-center gap-2 hover:border-purple-600 transition-all cursor-pointer';
+        item.className = 'mod-card bg-[#161925] p-2.5 rounded-xl border border-gray-800/80 flex justify-between items-center gap-2 hover:border-purple-600 transition-all cursor-pointer';
         
         item.innerHTML = `
-            <div class="flex items-center gap-3 pointer-events-none">
-                <img src="${mod.icon_url || 'https://placehold.co/40'}" class="w-10 h-10 rounded-lg object-cover">
-                <div class="text-left">
-                    <h4 class="font-semibold text-sm text-white">${mod.title}</h4>
-                    <p class="text-xs text-gray-400 line-clamp-1">${mod.description}</p>
+            <div class="flex items-center gap-2.5 pointer-events-none overflow-hidden">
+                <img src="${mod.icon_url || 'https://placehold.co/40'}" class="w-9 h-9 rounded-lg object-cover flex-shrink-0">
+                <div class="text-left overflow-hidden">
+                    <h4 class="font-bold text-xs text-white truncate">${mod.title}</h4>
+                    <p class="text-[11px] text-gray-400 truncate">${mod.description || 'Sin descripción.'}</p>
                 </div>
             </div>
-            <button onclick="addMod('${mod.project_id}', '${mod.title}', '${mod.icon_url}')" class="add-btn bg-purple-600 hover:bg-purple-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors z-10">
+            <button onclick="addMod('${mod.project_id}', '${mod.title.replace(/'/g, "\\'")}', '${mod.icon_url || ''}')" class="add-btn bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex-shrink-0 z-10">
                 + Añadir
             </button>
         `;
 
         item.addEventListener('click', (e) => {
-            if (e.target.closest('.add-btn')) {
-                return; 
-            }
+            if (e.target.closest('.add-btn')) return;
             openPreview(mod.project_id);
         });
 
@@ -84,13 +103,13 @@ function displayResults(mods) {
     });
 }
 
-// ABRIR VENTANA EMERGENTE DE VISTA PREVIA (MODAL)
+// MODAL VISTA PREVIA DEL MOD
 async function openPreview(projectId) {
     modal.classList.remove('hidden');
-    modalDescription.innerHTML = "<p class='text-gray-400 italic text-sm'>Cargando detalles del mod...</p>";
+    modalDescription.innerHTML = "<p class='text-gray-400 italic text-xs'>Cargando detalles del proyecto...</p>";
     modalGallery.innerHTML = '';
     modalFooter.innerHTML = '';
-    galleryImages = []; // Limpiar galería previa
+    galleryImages = [];
 
     try {
         const response = await fetch(`https://api.modrinth.com/v2/project/${projectId}`);
@@ -98,72 +117,50 @@ async function openPreview(projectId) {
 
         modalIcon.src = project.icon_url || 'https://placehold.co/40';
         modalTitle.innerText = project.title;
-        modalAuthor.innerText = `Creado por: ${project.organization || 'Autor Desconocido'}`;
-        
-        // Traducir el Markdown de Modrinth a HTML estructurado
-// Traducir el Markdown de Modrinth a HTML estructurado
+        modalAuthor.innerText = `Creado por: ${project.organization || 'Autor de Modrinth'}`;
+
         if (project.body) {
             let htmlContent = "";
-
-            // Si la librería de Marked cargó bien, la usamos
             if (typeof marked !== 'undefined' && marked.parse) {
                 htmlContent = marked.parse(project.body);
             } else {
-                // Si falló internet o la caché, usamos este traductor casero de emergencia
-                let rawText = project.body;
-                rawText = rawText.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>'); // negrita + cursiva
-                rawText = rawText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // negrita
-                rawText = rawText.replace(/\*(.*?)\*/g, '<em>$1</em>'); // cursiva
-                rawText = rawText.replace(/__(.*?)__/g, '<u>$1</u>'); // subrayado
-                rawText = rawText.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" class="text-purple-400 hover:text-purple-300 underline">$1</a>'); // enlaces
-                rawText = rawText.replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" class="my-2 rounded max-h-48">'); // imágenes incrustadas
-                rawText = rawText.replace(/---\r?\n/g, '<hr class="border-gray-800 my-4">'); // líneas separadoras
-                rawText = rawText.replace(/\r?\n/g, '<br>'); // saltos de línea
-                htmlContent = rawText;
+                htmlContent = project.body.replace(/\n/g, '<br>');
             }
-
             modalDescription.innerHTML = htmlContent;
-            
-            // Estilos CSS rápidos de Tailwind aplicados al Markdown renderizado para darle look Premium
-            modalDescription.querySelectorAll('a').forEach(el => el.className = 'text-purple-400 hover:text-purple-300 underline transition-colors');
-            modalDescription.querySelectorAll('h1, h2, h3').forEach(el => el.className = 'text-white font-bold text-base mt-4 mb-2 block border-b border-gray-900 pb-1');
+
+            // Formato visual Tailwind para Markdown
+            modalDescription.querySelectorAll('a').forEach(el => el.className = 'text-purple-400 underline hover:text-purple-300');
+            modalDescription.querySelectorAll('h1, h2, h3').forEach(el => el.className = 'text-white font-bold text-sm mt-3 mb-1 border-b border-gray-800 pb-1');
             modalDescription.querySelectorAll('ul').forEach(el => el.className = 'list-disc list-inside space-y-1 my-2 text-gray-300');
-            modalDescription.querySelectorAll('ol').forEach(el => el.className = 'list-decimal list-inside space-y-1 my-2 text-gray-300');
-            modalDescription.querySelectorAll('code').forEach(el => el.className = 'bg-gray-900 text-purple-300 px-1.5 py-0.5 rounded text-xs font-mono');
+            modalDescription.querySelectorAll('code').forEach(el => el.className = 'bg-gray-900 text-purple-300 px-1 py-0.5 rounded text-[11px] font-mono');
         } else {
-            modalDescription.innerHTML = "No hay descripción ampliada para este mod.";
+            modalDescription.innerHTML = "Este proyecto no incluye descripción extensa.";
         }
 
-        // Cargar fotos en el arreglo de imágenes
         if (project.gallery && project.gallery.length > 0) {
             project.gallery.forEach((img, idx) => {
                 galleryImages.push(img.url);
-
                 const imageEl = document.createElement('img');
                 imageEl.src = img.url;
-                imageEl.className = 'h-24 w-40 rounded-lg object-cover border border-gray-800 flex-shrink-0 hover:scale-105 hover:border-purple-600 transition-all cursor-zoom-in';
-                
-                // Abrir visor de fotos en el index cliqueado
+                imageEl.className = 'h-20 w-36 rounded-lg object-cover border border-gray-800 flex-shrink-0 hover:scale-105 hover:border-purple-600 transition-all cursor-zoom-in';
                 imageEl.addEventListener('click', () => showLightbox(idx));
                 modalGallery.appendChild(imageEl);
             });
         } else {
-            modalGallery.innerHTML = `<span class="text-xs text-gray-600 italic">Este mod no cuenta con capturas en su galería.</span>`;
+            modalGallery.innerHTML = `<span class="text-xs text-gray-600 italic">No hay fotos en la galería de este mod.</span>`;
         }
 
-        // Agregar botón de acción de forma FIJA en el footer del modal
         modalFooter.innerHTML = `
-            <button onclick="addMod('${project.id}', '${project.title}', '${project.icon_url}'); closePreview();" class="purple-gradient px-6 py-2.5 rounded-xl font-bold text-sm text-white hover:scale-105 transition-transform">
-                + Añadir a mi Pack
+            <button onclick="addMod('${project.id}', '${project.title.replace(/'/g, "\\'")}', '${project.icon_url || ''}'); closePreview();" class="purple-gradient px-5 py-2 rounded-xl font-bold text-xs text-white hover:scale-105 transition-transform">
+                + Añadir a mi Modpack
             </button>
         `;
-
     } catch (e) {
-        modalDescription.innerHTML = "<p class='text-red-500 text-sm'>Error al cargar detalles de la API de Modrinth.</p>";
+        modalDescription.innerHTML = "<p class='text-red-500 text-xs'>Error al cargar información extendida desde Modrinth.</p>";
     }
 }
 
-// FUNCIONES DEL VISOR DE IMÁGENES (LIGHTBOX)
+// LIGHTBOX (GALERÍA)
 function showLightbox(index) {
     currentImageIndex = index;
     lightboxImg.src = galleryImages[currentImageIndex];
@@ -171,52 +168,29 @@ function showLightbox(index) {
     lightbox.classList.remove('hidden');
 }
 
-function closeLightboxView() {
-    lightbox.classList.add('hidden');
-}
+function closeLightboxView() { lightbox.classList.add('hidden'); }
+function nextImage() { if (galleryImages.length > 1) showLightbox((currentImageIndex + 1) % galleryImages.length); }
+function prevImage() { if (galleryImages.length > 1) showLightbox((currentImageIndex - 1 + galleryImages.length) % galleryImages.length); }
 
-function nextImage() {
-    if (galleryImages.length <= 1) return;
-    currentImageIndex = (currentImageIndex + 1) % galleryImages.length;
-    showLightbox(currentImageIndex);
-}
-
-// Navegar atrás
-function prevImage() {
-    if (galleryImages.length <= 1) return;
-    currentImageIndex = (currentImageIndex - 1 + galleryImages.length) % galleryImages.length;
-    showLightbox(currentImageIndex);
-}
-
-// Event Listeners para clicks del Visor
 closeLightbox.addEventListener('click', closeLightboxView);
 prevLightbox.addEventListener('click', (e) => { e.stopPropagation(); prevImage(); });
 nextLightbox.addEventListener('click', (e) => { e.stopPropagation(); nextImage(); });
 lightbox.addEventListener('click', closeLightboxView);
 
-// ESCUCHADOR DE TECLADO (FLECHAS Y ESC)
 document.addEventListener('keydown', (e) => {
     if (lightbox.classList.contains('hidden')) return;
-
-    if (e.key === "ArrowRight") {
-        nextImage();
-    } else if (e.key === "ArrowLeft") {
-        prevImage();
-    } else if (e.key === "Escape") {
-        closeLightboxView();
-    }
+    if (e.key === "ArrowRight") nextImage();
+    if (e.key === "ArrowLeft") prevImage();
+    if (e.key === "Escape") closeLightboxView();
 });
 
-// CERRAR MODAL
-function closePreview() {
-    modal.classList.add('hidden');
-}
+function closePreview() { modal.classList.add('hidden'); }
 closeModal.addEventListener('click', closePreview);
 modal.addEventListener('click', (e) => { if (e.target === modal) closePreview(); });
 
-// AÑADIR UN MOD A LA LISTA
+// AÑADIR MOD A LA LISTA DEL PACK
 async function addMod(projectId, title, iconUrl) {
-    if (selectedMods.some(m => m.id === projectId)) return alert("El mod ya está en la lista de tu pack.");
+    if (selectedMods.some(m => m.id === projectId)) return alert("El mod ya está agregado a tu lista.");
 
     const mcVersion = document.getElementById('mc-version').value;
     const loader = document.getElementById('loader-type').value;
@@ -227,7 +201,7 @@ async function addMod(projectId, title, iconUrl) {
         const versions = await response.json();
 
         if (versions.length === 0) {
-            alert(`Incompatible: No existe un archivo para ${title} disponible en Minecraft ${mcVersion} con Loader ${loader}.`);
+            alert(`Incompatibilidad: No existe versión de "${title}" publicada para Minecraft ${mcVersion} con Loader ${loader.toUpperCase()}.`);
             return;
         }
 
@@ -246,64 +220,139 @@ async function addMod(projectId, title, iconUrl) {
 
         updateAddedList();
     } catch (e) {
-        alert("Error de conexión al buscar archivos compatibles del mod.");
+        alert("Error de conexión al obtener archivos del mod seleccionado.");
     }
 }
 
-// ACTUALIZAR LA LISTA DE AÑADIDOS EN PANTALLA
+// ACTUALIZAR LISTA DE MODS SELECCIONADOS
 function updateAddedList() {
     modCount.innerText = selectedMods.length;
+    statMods.innerText = selectedMods.length;
+
     if (selectedMods.length === 0) {
-        addedList.innerHTML = `<p class="text-gray-500 text-sm text-center py-8">No has añadido mods aún.</p>`;
+        addedList.innerHTML = `<p class="text-gray-500 text-xs text-center py-8">No has añadido mods aún.</p>`;
         return;
     }
 
     addedList.innerHTML = '';
     selectedMods.forEach((mod, index) => {
         const item = document.createElement('div');
-        item.className = 'bg-[#161925] p-3 rounded-xl border border-gray-800 flex justify-between items-center gap-2';
+        item.className = 'bg-[#161925] p-2.5 rounded-xl border border-gray-800 flex justify-between items-center gap-2';
         item.innerHTML = `
-            <div class="flex items-center gap-3">
-                <img src="${mod.icon || 'https://placehold.co/40'}" class="w-8 h-8 rounded-lg object-cover">
-                <span class="font-semibold text-sm text-white truncate max-w-[120px]">${mod.title}</span>
+            <div class="flex items-center gap-2.5 overflow-hidden">
+                <img src="${mod.icon || 'https://placehold.co/40'}" class="w-7 h-7 rounded-lg object-cover flex-shrink-0">
+                <div class="overflow-hidden">
+                    <span class="font-bold text-xs text-white truncate block">${mod.title}</span>
+                    <span class="text-[10px] text-gray-500 truncate block">${mod.filename}</span>
+                </div>
             </div>
-            <button onclick="removeMod(${index})" class="text-red-500 hover:text-red-400 text-xs font-semibold px-2">Quitar</button>
+            <button onclick="removeMod(${index})" class="text-red-400 hover:text-red-300 text-xs font-semibold px-2 py-1 flex-shrink-0">Quitar</button>
         `;
         addedList.appendChild(item);
     });
 }
 
-// REMOVER MOD DE LA LISTA
 function removeMod(index) {
     selectedMods.splice(index, 1);
     updateAddedList();
 }
 
-// LISTENERS DE BÚSQUEDA
-btnSearch.addEventListener('click', searchMods);
-searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchMods(); });
+// GESTIÓN DE ANEXOS / OVERRIDES (ARCHIVOS Y CARPETAS LOCALES)
+function handleFiles(files) {
+    for (let file of files) {
+        // Formatear la ruta relativa limpia dentro de /overrides/
+        let relativePath = file.webkitRelativePath || file.name;
+        
+        // Evitar duplicados por ruta
+        if (!localOverrides.some(o => o.path === relativePath)) {
+            localOverrides.push({
+                path: relativePath,
+                file: file
+            });
+        }
+    }
+    updateOverridesList();
+}
 
-// CONSTRUIR Y EXPORTAR EL ARCHIVO .MRPACK
-btnExport.addEventListener('click', async () => {
-    if (selectedMods.length === 0) {
-        alert("¡Añade al menos un mod compatible antes de exportar!");
+function updateOverridesList() {
+    statFiles.innerText = localOverrides.length;
+
+    if (localOverrides.length === 0) {
+        overridesList.innerHTML = `<p class="text-gray-600 text-xs text-center py-4">No has subido archivos locales aún.</p>`;
         return;
     }
 
-    const packName = document.getElementById('pack-name').value;
-    const packAuthor = document.getElementById('pack-author').value;
-    const packVer = document.getElementById('pack-version').value;
-    const mcVersion = document.getElementById('mc-version').value;
+    overridesList.innerHTML = '';
+    localOverrides.forEach((item, index) => {
+        const el = document.createElement('div');
+        el.className = 'bg-[#161925] px-2.5 py-1.5 rounded-lg border border-gray-800/80 flex justify-between items-center text-xs text-gray-300';
+        el.innerHTML = `
+            <span class="truncate font-mono text-[11px] max-w-[220px]" title="${item.path}">${item.path}</span>
+            <button onclick="removeOverride(${index})" class="text-red-400 hover:text-red-300 font-bold ml-2">&times;</button>
+        `;
+        overridesList.appendChild(el);
+    });
+}
+
+function removeOverride(index) {
+    localOverrides.splice(index, 1);
+    updateOverridesList();
+}
+
+function clearOverrides() {
+    localOverrides = [];
+    updateOverridesList();
+}
+
+// DRAG & DROP LISTENERS
+dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('border-purple-600', 'bg-purple-950/20');
+});
+
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('border-purple-600', 'bg-purple-950/20');
+});
+
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('border-purple-600', 'bg-purple-950/20');
+    if (e.dataTransfer.files.length > 0) {
+        handleFiles(e.dataTransfer.files);
+    }
+});
+
+fileInputFolder.addEventListener('change', (e) => handleFiles(e.target.files));
+fileInputFiles.addEventListener('change', (e) => handleFiles(e.target.files));
+
+// BUSCADOR EVENT LISTENERS
+btnSearch.addEventListener('click', searchMods);
+searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchMods(); });
+
+// CONSTRUIDOR Y EXPORTADOR DEL ARCHIVO .MRPACK
+btnExport.addEventListener('click', async () => {
+    if (selectedMods.length === 0 && localOverrides.length === 0) {
+        alert("¡Tu pack está vacío! Añade al menos un mod de Modrinth o archivos locales en Overrides.");
+        return;
+    }
+
+    const packName = document.getElementById('pack-name').value.trim() || "Modpack";
+    const packAuthor = document.getElementById('pack-author').value.trim() || "Sa1xp";
+    const packVer = document.getElementById('pack-version').value.trim() || "1.0.0";
+    const mcVersion = document.getElementById('mc-version').value.trim() || "1.20.1";
     const loader = document.getElementById('loader-type').value;
+    const summary = document.getElementById('pack-summary').value.trim() || `Modpack por ${packAuthor}`;
+    const customLoaderVer = document.getElementById('loader-version').value.trim();
 
     const zip = new JSZip();
 
+    // 1. Estructura estándar del índice del Modpack (modrinth.index.json)
     const indexJson = {
         formatVersion: 1,
         game: "minecraft",
         versionId: packVer,
         name: packName,
-        summary: `Modpack creado por ${packAuthor} de forma ultra ligera desde la Web con PackCraft`,
+        summary: summary,
         files: selectedMods.map(mod => ({
             path: `mods/${mod.filename}`,
             hashes: {
@@ -322,11 +371,19 @@ btnExport.addEventListener('click', async () => {
         }
     };
 
-    indexJson.dependencies[loader] = "recommended";
+    // Asignar versión exacta o recomendada del Loader seleccionado
+    indexJson.dependencies[loader] = customLoaderVer || "recommended";
 
+    // Escribir el manifest principal
     zip.file("modrinth.index.json", JSON.stringify(indexJson, null, 2));
-    zip.folder("overrides");
 
+    // 2. Empaquetar archivos locales subidos dentro de la carpeta /overrides/
+    const overridesFolder = zip.folder("overrides");
+    localOverrides.forEach(item => {
+        overridesFolder.file(item.path, item.file);
+    });
+
+    // 3. Generar archivo .mrpack ejecutable al instante desde el navegador
     zip.generateAsync({ type: "blob" }).then((content) => {
         const link = document.createElement("a");
         link.href = URL.createObjectURL(content);
