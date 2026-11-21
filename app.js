@@ -1,6 +1,7 @@
 // ESTADO GLOBAL DE LA APLICACIÓN
 let selectedMods = [];
-let localOverrides = []; // Archivos locales para la carpeta overrides/
+let localOverrides = []; // { path: 'config/...', file: File }
+let skippedOverrides = []; // { name: '...', reason: '...' }
 let galleryImages = [];
 let currentImageIndex = 0;
 
@@ -14,12 +15,14 @@ const modCount = document.getElementById('mod-count');
 const btnExport = document.getElementById('btn-export');
 const statMods = document.getElementById('stat-mods');
 const statFiles = document.getElementById('stat-files');
+const statSkipped = document.getElementById('stat-skipped');
 
 // OVERRIDES Y DRAG & DROP
 const dropZone = document.getElementById('drop-zone');
 const fileInputFolder = document.getElementById('file-input-folder');
 const fileInputFiles = document.getElementById('file-input-files');
 const overridesList = document.getElementById('overrides-list');
+const skippedList = document.getElementById('skipped-list');
 
 // MODAL Y LIGHTBOX
 const modal = document.getElementById('preview-modal');
@@ -89,7 +92,7 @@ function displayResults(mods) {
                     <p class="text-[11px] text-gray-400 truncate">${mod.description || 'Sin descripción.'}</p>
                 </div>
             </div>
-            <button onclick="addMod('${mod.project_id}', '${mod.title.replace(/'/g, "\\'")}', '${mod.icon_url || ''}')" class="add-btn bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex-shrink-0 z-10">
+            <button type="button" onclick="addMod('${mod.project_id}', '${mod.title.replace(/'/g, "\\'")}', '${mod.icon_url || ''}')" class="add-btn bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex-shrink-0 z-10">
                 + Añadir
             </button>
         `;
@@ -150,7 +153,7 @@ async function openPreview(projectId) {
         }
 
         modalFooter.innerHTML = `
-            <button onclick="addMod('${project.id}', '${project.title.replace(/'/g, "\\'")}', '${project.icon_url || ''}'); closePreview();" class="purple-gradient px-5 py-2 rounded-xl font-bold text-xs text-white hover:scale-105 transition-transform">
+            <button type="button" onclick="addMod('${project.id}', '${project.title.replace(/'/g, "\\'")}', '${project.icon_url || ''}'); closePreview();" class="purple-gradient px-5 py-2 rounded-xl font-bold text-xs text-white hover:scale-105 transition-transform">
                 + Añadir a mi Modpack
             </button>
         `;
@@ -244,7 +247,7 @@ function updateAddedList() {
                     <span class="text-[10px] text-gray-500 truncate block">${mod.filename}</span>
                 </div>
             </div>
-            <button onclick="removeMod(${index})" class="text-red-400 hover:text-red-300 text-xs font-semibold px-2 py-1 flex-shrink-0">Quitar</button>
+            <button type="button" onclick="removeMod(${index})" class="text-red-400 hover:text-red-300 text-xs font-semibold px-2 py-1 flex-shrink-0">Quitar</button>
         `;
         addedList.appendChild(item);
     });
@@ -256,110 +259,214 @@ function removeMod(index) {
 }
 
 // =========================================================================
-// MOTOR INTELIGENTE DE LIMPIEZA Y REORGANIZACIÓN DE OVERRIDES
+// MOTOR DE LECTURA RECURSIVA, LIMPIEZA Y ACOMODO INTELIGENTE DE OVERRIDES
 // =========================================================================
 
-// Reglas de archivos/carpetas a ignorar (Basura, logs, executables, temporales)
-const BLACKLISTED_PATTERNS = [
-    // Logs y temporales
-    /\/logs\//i, /\.log$/i, /\.log\.gz$/i, /\/crash-reports\//i, /\/cache\//i, /\/backups\//i, /\.tmp$/i,
-    // Basura de Sistemas Operativos
-    /\.ds_store$/i, /thumbs\.db$/i, /\/\.git\//i, /\/\.vscode\//i, /\/\.idea\//i,
-    // Ejecutables y scripts de instalación que no deben ir dentro de un modpack
-    /\.exe$/i, /\.bat$/i, /\.cmd$/i, /\.sh$/i, /\.msi$/i,
-    // Perfiles y metadata pesada de Launchers
-    /launcher_profiles\.json$/i, /tlauncher.*\.json$/i, /usercache\.json$/i, /usernamecache\.json$/i
+// Carpetas oficiales conocidas de una instancia de Minecraft dentro de overrides/
+const KNOWN_MINECRAFT_DIRS = [
+    'config',
+    'defaultconfigs',
+    'resourcepacks',
+    'shaderpacks',
+    'mods',
+    'kubejs',
+    'datapacks',
+    'saves',
+    'scripts',
+    'patchouli_books',
+    'schematics'
 ];
 
-function sanitizeAndRoutePath(rawPath, fileName) {
-    // Normalizar separadores de ruta a formato Unix "/"
-    let path = rawPath.replace(/\\/g, '/');
+// Reglas con motivo exacto para explicar qué no se sube y por qué
+const SKIP_RULES = [
+    { regex: /(?:^|\/)logs(?:\/|$)|\.log(?:\.gz)?$/i, reason: 'Archivo o carpeta de logs' },
+    { regex: /(?:^|\/)crash-reports(?:\/|$)/i, reason: 'Carpeta de crash reports' },
+    { regex: /(?:^|\/)(?:cache|caches|backups|backup)(?:\/|$)/i, reason: 'Carpeta de caché o respaldos' },
+    { regex: /\.(?:tmp|temp|bak|old|swp)$/i, reason: 'Archivo temporal o de respaldo' },
+    { regex: /(?:^|\/)(?:\.git|\.svn|\.vscode|\.idea)(?:\/|$)/i, reason: 'Carpeta de control de versiones o IDE' },
+    { regex: /(?:^|\/)(?:\.ds_store|thumbs\.db|desktop\.ini)$/i, reason: 'Archivo oculto o del sistema operativo' },
+    { regex: /\.(?:exe|bat|cmd|sh|ps1|msi|com|scr|dll|so|dylib)$/i, reason: 'Ejecutable, librería nativa o script del sistema' },
+    { regex: /(?:^|\/)(?:launcher_profiles\.json|tlauncher.*\.json|usercache\.json|usernamecache\.json|servers\.dat_old)$/i, reason: 'Archivo interno de launcher o caché de sesión' }
+];
 
-    // 1. REGLA DE FILTRADO: Verificar si el archivo está en la lista negra
-    for (const pattern of BLACKLISTED_PATTERNS) {
-        if (pattern.test(path)) {
-            return null; // Omitir este archivo
+function recordSkipped(name, reason) {
+    const cleanName = name.replace(/\\/g, '/');
+    if (!skippedOverrides.some(s => s.name === cleanName && s.reason === reason)) {
+        skippedOverrides.push({ name: cleanName, reason });
+    }
+}
+
+function evaluateAndRouteFile(file, explicitRelativePath = null) {
+    const rawPath = (explicitRelativePath || file.webkitRelativePath || file.name || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '');
+
+    const fileName = file.name || rawPath.split('/').pop() || 'archivo';
+
+    // 1. Verificar archivos vacíos
+    if (file.size === 0) {
+        recordSkipped(rawPath || fileName, 'Archivo vacío (0 bytes)');
+        return null;
+    }
+
+    // 2. Verificar reglas de exclusión con motivo explícito
+    for (const rule of SKIP_RULES) {
+        if (rule.regex.test(rawPath) || rule.regex.test(fileName)) {
+            recordSkipped(rawPath || fileName, rule.reason);
+            return null;
         }
     }
 
-    // 2. REGLA DE LIMPIEZA DE PREFIX: Remover carpetas contenedoras raíz como ".minecraft/", "overrides/", "MyModpack/"
-    const commonRootFolders = ['/dot-minecraft/', '/.minecraft/', '/overrides/', '/minecraft/'];
-    const lowerPath = '/' + path.toLowerCase();
-
-    for (const root of commonRootFolders) {
-        const rootIdx = lowerPath.indexOf(root);
-        if (rootIdx !== -1) {
-            path = path.substring(rootIdx + root.length);
-            break;
+    // 3. Buscar si en algún nivel de la ruta existe una carpeta conocida de Minecraft (config/, resourcepacks/, etc.)
+    const parts = rawPath.split('/').filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+        const segmentLower = parts[i].toLowerCase();
+        if (KNOWN_MINECRAFT_DIRS.includes(segmentLower)) {
+            // Reconstruir desde la carpeta conocida en adelante
+            const normalizedParts = [segmentLower, ...parts.slice(i + 1)];
+            return normalizedParts.join('/');
         }
     }
 
-    // Si al limpiar quedó un slash inicial, removerlo
-    path = path.replace(/^\/+/, '');
+    // 4. Si se subió una carpeta raíz contenedora (ej. "MiPack/options.txt" o ".minecraft/options.txt"),
+    // limpiar carpetas raíz genéricas si el siguiente elemento ya es un archivo o carpeta válida
+    const rootWrappers = ['.minecraft', 'dot-minecraft', 'minecraft', 'overrides', 'instance'];
+    let cleanedParts = [...parts];
+    while (cleanedParts.length > 1 && rootWrappers.includes(cleanedParts[0].toLowerCase())) {
+        cleanedParts.shift();
+    }
 
-    // 3. REGLA DE RUTEO INTELIGENTE: Si el archivo está en la raíz sin carpeta asignada
-    if (!path.includes('/')) {
-        const nameLower = fileName.toLowerCase();
+    let finalPath = cleanedParts.join('/');
 
-        // Archivos .jar sueltos -> mods/
-        if (nameLower.endsWith('.jar')) {
+    // 5. Si el archivo quedó suelto en la raíz (sin carpeta), acomodarlo según su tipo
+    if (!finalPath.includes('/')) {
+        const lowerName = fileName.toLowerCase();
+
+        if (lowerName.endsWith('.jar')) {
             return `mods/${fileName}`;
         }
-
-        // Shaders (.zip o .fsh) sueltos -> shaderpacks/
-        if (nameLower.includes('shader') || nameLower.endsWith('.fsh')) {
+        if (lowerName.includes('shader') || lowerName.endsWith('.fsh') || lowerName.endsWith('.vsh')) {
             return `shaderpacks/${fileName}`;
         }
-
-        // Resourcepacks (.zip) sueltos -> resourcepacks/
-        if (nameLower.endsWith('.zip') && !nameLower.includes('config')) {
+        if (lowerName.endsWith('.zip')) {
             return `resourcepacks/${fileName}`;
         }
-
-        // Archivos de configuración sueltos (txt, json, toml, cfg, ini) -> config/
-        if (nameLower.endsWith('.toml') || nameLower.endsWith('.cfg') || nameLower.endsWith('.json5') || nameLower.endsWith('.ini')) {
+        if (
+            lowerName.endsWith('.toml') ||
+            lowerName.endsWith('.cfg') ||
+            lowerName.endsWith('.json5') ||
+            lowerName.endsWith('.ini') ||
+            lowerName.endsWith('.properties')
+        ) {
             return `config/${fileName}`;
         }
     }
 
-    return path;
+    return finalPath;
 }
 
-function handleFiles(files) {
-    let addedCount = 0;
-    let skippedCount = 0;
+function addProcessedFile(file, explicitRelativePath = null) {
+    const routedPath = evaluateAndRouteFile(file, explicitRelativePath);
+    if (!routedPath) return;
 
-    for (let file of files) {
-        let rawPath = file.webkitRelativePath || file.name;
-        let routedPath = sanitizeAndRoutePath(rawPath, file.name);
+    if (!localOverrides.some(o => o.path === routedPath)) {
+        localOverrides.push({
+            path: routedPath,
+            file: file
+        });
+    }
+}
 
-        if (!routedPath) {
-            skippedCount++;
-            continue; // Se ignoró por basura o ejecutable inseguro
+// Recorrido recursivo de entradas de carpetas en Drag & Drop (webkitGetAsEntry)
+function traverseEntry(entry, currentPath = '') {
+    return new Promise((resolve) => {
+        if (!entry) return resolve();
+
+        if (entry.isFile) {
+            entry.file(
+                (file) => {
+                    const fullPath = currentPath ? `${currentPath}/${file.name}` : file.name;
+                    addProcessedFile(file, fullPath);
+                    resolve();
+                },
+                () => {
+                    const fallbackPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+                    recordSkipped(fallbackPath, 'No se pudo leer el archivo desde el sistema');
+                    resolve();
+                }
+            );
+        } else if (entry.isDirectory) {
+            const dirPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+            const reader = entry.createReader();
+            const allEntries = [];
+
+            const readBatch = () => {
+                reader.readEntries(
+                    async (entries) => {
+                        if (entries.length === 0) {
+                            for (const child of allEntries) {
+                                await traverseEntry(child, dirPath);
+                            }
+                            resolve();
+                        } else {
+                            allEntries.push(...entries);
+                            readBatch();
+                        }
+                    },
+                    () => {
+                        recordSkipped(dirPath, 'No se pudo leer el contenido de la carpeta');
+                        resolve();
+                    }
+                );
+            };
+
+            readBatch();
+        } else {
+            resolve();
         }
+    });
+}
 
-        // Evitar duplicados exactos en la lista
-        if (!localOverrides.some(o => o.path === routedPath)) {
-            localOverrides.push({
-                path: routedPath,
-                file: file
-            });
-            addedCount++;
+async function handleDrop(e) {
+    e.preventDefault();
+    dropZone.classList.remove('border-purple-600', 'bg-purple-950/20');
+
+    const items = e.dataTransfer && e.dataTransfer.items;
+    if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+        const entries = [];
+        for (let i = 0; i < items.length; i++) {
+            const entry = items[i].webkitGetAsEntry();
+            if (entry) entries.push(entry);
         }
+        for (const entry of entries) {
+            await traverseEntry(entry, '');
+        }
+        refreshOverrideViews();
+        return;
     }
 
-    if (skippedCount > 0) {
-        console.log(`[Smart Clean] Se auto-eliminaron ${skippedCount} archivo(s) innecesarios o basuras (logs, .exe, cache, etc.).`);
+    if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        handleFileList(e.dataTransfer.files);
     }
+}
 
+function handleFileList(files) {
+    for (let i = 0; i < files.length; i++) {
+        addProcessedFile(files[i]);
+    }
+    refreshOverrideViews();
+}
+
+function refreshOverrideViews() {
     updateOverridesList();
+    updateSkippedList();
 }
 
 function updateOverridesList() {
     statFiles.innerText = localOverrides.length;
 
     if (localOverrides.length === 0) {
-        overridesList.innerHTML = `<p class="text-gray-600 text-xs text-center py-4">No has subido archivos locales aún.</p>`;
+        overridesList.innerHTML = `<p class="text-gray-600 text-xs text-center py-4">No has subido archivos locales válidos aún.</p>`;
         return;
     }
 
@@ -369,12 +476,35 @@ function updateOverridesList() {
         el.className = 'bg-[#161925] px-2.5 py-1.5 rounded-lg border border-gray-800/80 flex justify-between items-center text-xs text-gray-300';
         el.innerHTML = `
             <div class="flex items-center gap-1.5 overflow-hidden">
-                <span class="text-purple-400 text-[10px] font-bold">[AUTO]</span>
-                <span class="truncate font-mono text-[11px] max-w-[210px]" title="${item.path}">${item.path}</span>
+                <span class="text-purple-400 text-[10px] font-bold flex-shrink-0">overrides/</span>
+                <span class="truncate font-mono text-[11px]" title="overrides/${item.path}">${item.path}</span>
             </div>
-            <button onclick="removeOverride(${index})" class="text-red-400 hover:text-red-300 font-bold ml-2">&times;</button>
+            <button type="button" onclick="removeOverride(${index})" class="text-red-400 hover:text-red-300 font-bold ml-2 flex-shrink-0">&times;</button>
         `;
         overridesList.appendChild(el);
+    });
+}
+
+function updateSkippedList() {
+    statSkipped.innerText = skippedOverrides.length;
+
+    if (skippedOverrides.length === 0) {
+        skippedList.innerHTML = `<p class="text-gray-600 text-xs text-center py-4">Ningún archivo omitido todavía.</p>`;
+        return;
+    }
+
+    skippedList.innerHTML = '';
+    skippedOverrides.forEach((item, index) => {
+        const el = document.createElement('div');
+        el.className = 'bg-[#1a1116] px-2.5 py-1.5 rounded-lg border border-red-900/50 flex justify-between items-start gap-2 text-xs text-gray-300';
+        el.innerHTML = `
+            <div class="overflow-hidden">
+                <div class="truncate font-mono text-[11px] text-red-200" title="${item.name}">${item.name}</div>
+                <div class="text-[10px] text-red-400">Motivo: ${item.reason}</div>
+            </div>
+            <button type="button" onclick="removeSkipped(${index})" class="text-gray-400 hover:text-white font-bold flex-shrink-0">&times;</button>
+        `;
+        skippedList.appendChild(el);
     });
 }
 
@@ -388,6 +518,16 @@ function clearOverrides() {
     updateOverridesList();
 }
 
+function removeSkipped(index) {
+    skippedOverrides.splice(index, 1);
+    updateSkippedList();
+}
+
+function clearSkipped() {
+    skippedOverrides = [];
+    updateSkippedList();
+}
+
 // DRAG & DROP LISTENERS
 dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -398,16 +538,17 @@ dropZone.addEventListener('dragleave', () => {
     dropZone.classList.remove('border-purple-600', 'bg-purple-950/20');
 });
 
-dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('border-purple-600', 'bg-purple-950/20');
-    if (e.dataTransfer.files.length > 0) {
-        handleFiles(e.dataTransfer.files);
-    }
+dropZone.addEventListener('drop', handleDrop);
+
+fileInputFolder.addEventListener('change', (e) => {
+    handleFileList(e.target.files);
+    e.target.value = '';
 });
 
-fileInputFolder.addEventListener('change', (e) => handleFiles(e.target.files));
-fileInputFiles.addEventListener('change', (e) => handleFiles(e.target.files));
+fileInputFiles.addEventListener('change', (e) => {
+    handleFileList(e.target.files);
+    e.target.value = '';
+});
 
 btnSearch.addEventListener('click', searchMods);
 searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchMods(); });
@@ -435,7 +576,6 @@ btnExport.addEventListener('click', async () => {
     try {
         const zip = new JSZip();
 
-        // 1. Crear manifest (modrinth.index.json)
         const indexJson = {
             formatVersion: 1,
             game: "minecraft",
@@ -463,10 +603,8 @@ btnExport.addEventListener('click', async () => {
         indexJson.dependencies[loader] = customLoaderVer || "recommended";
         zip.file("modrinth.index.json", JSON.stringify(indexJson, null, 2));
 
-        // 2. Procesamiento asíncrono y seguro de archivos locales (/overrides/)
         const overridesFolder = zip.folder("overrides");
         let processedFiles = 0;
-        let skippedFiles = 0;
 
         for (const item of localOverrides) {
             try {
@@ -474,23 +612,25 @@ btnExport.addEventListener('click', async () => {
                 overridesFolder.file(item.path, arrayBuffer);
                 processedFiles++;
             } catch (fileErr) {
-                console.warn(`[PackCraft Warning] No se pudo leer el archivo local: ${item.path}`, fileErr);
-                skippedFiles++;
+                recordSkipped(`overrides/${item.path}`, 'Error al leer el archivo durante la exportación');
             }
         }
 
-        if (skippedFiles > 0) {
-            alert(`Aviso: ${skippedFiles} archivo(s) no pudieron ser leídos del disco y fueron omitidos, pero el resto se empaquetó correctamente.`);
+        updateSkippedList();
+
+        if (selectedMods.length === 0 && processedFiles === 0) {
+            alert("No se pudo empaquetar ningún archivo válido. Revisa la sección 'No se subieron (Motivo exacto)' en la pestaña Configs / Overrides.");
+            packStatus.innerText = "Sin archivos válidos";
+            return;
         }
 
-        // 3. Generar blob del archivo comprimido
         const content = await zip.generateAsync({ type: "blob" });
         const link = document.createElement("a");
         link.href = URL.createObjectURL(content);
         link.download = `${packName.toLowerCase().replace(/\s+/g, '-')}-${packVer}.mrpack`;
         link.click();
 
-        packStatus.innerText = "¡Exportado con éxito!";
+        packStatus.innerText = `¡Exportado! (${processedFiles} overrides)`;
     } catch (err) {
         console.error("Error al empaquetar .mrpack:", err);
         alert("Ocurrió un error inesperado al comprimir el modpack. Revisa la consola.");
