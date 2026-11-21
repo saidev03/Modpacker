@@ -47,7 +47,7 @@ function switchTab(tabName) {
     document.getElementById(`tab-${tabName}`).classList.remove('hidden');
 }
 
-// BÚSQUEDA DE MODS EN MODRINTH API (FABRIC, FORGE, NEOFORGE, QUILT)
+// BÚSQUEDA DE MODS EN MODRINTH API
 async function searchMods() {
     const query = searchInput.value.trim();
     if (!query) return;
@@ -72,7 +72,7 @@ async function searchMods() {
 // RENDERIZAR RESULTADOS DE BÚSQUEDA
 function displayResults(mods) {
     if (mods.length === 0) {
-        resultsList.innerHTML = `<div class="text-gray-500 text-xs text-center py-8">No se encontraron mods para la combinación seleccionada.</div>`;
+        resultsList.innerHTML = `<div class="text-gray-500 text-xs text-center py-8">No se encontraron mods para esta versión o loader.</div>`;
         return;
     }
 
@@ -103,7 +103,7 @@ function displayResults(mods) {
     });
 }
 
-// MODAL VISTA PREVIA DEL MOD
+// VISTA PREVIA MODAL
 async function openPreview(projectId) {
     modal.classList.remove('hidden');
     modalDescription.innerHTML = "<p class='text-gray-400 italic text-xs'>Cargando detalles del proyecto...</p>";
@@ -128,7 +128,6 @@ async function openPreview(projectId) {
             }
             modalDescription.innerHTML = htmlContent;
 
-            // Formato visual Tailwind para Markdown
             modalDescription.querySelectorAll('a').forEach(el => el.className = 'text-purple-400 underline hover:text-purple-300');
             modalDescription.querySelectorAll('h1, h2, h3').forEach(el => el.className = 'text-white font-bold text-sm mt-3 mb-1 border-b border-gray-800 pb-1');
             modalDescription.querySelectorAll('ul').forEach(el => el.className = 'list-disc list-inside space-y-1 my-2 text-gray-300');
@@ -160,7 +159,7 @@ async function openPreview(projectId) {
     }
 }
 
-// LIGHTBOX (GALERÍA)
+// LIGHTBOX
 function showLightbox(index) {
     currentImageIndex = index;
     lightboxImg.src = galleryImages[currentImageIndex];
@@ -188,7 +187,7 @@ function closePreview() { modal.classList.add('hidden'); }
 closeModal.addEventListener('click', closePreview);
 modal.addEventListener('click', (e) => { if (e.target === modal) closePreview(); });
 
-// AÑADIR MOD A LA LISTA DEL PACK
+// AÑADIR MOD MODRINTH
 async function addMod(projectId, title, iconUrl) {
     if (selectedMods.some(m => m.id === projectId)) return alert("El mod ya está agregado a tu lista.");
 
@@ -224,13 +223,12 @@ async function addMod(projectId, title, iconUrl) {
     }
 }
 
-// ACTUALIZAR LISTA DE MODS SELECCIONADOS
 function updateAddedList() {
     modCount.innerText = selectedMods.length;
     statMods.innerText = selectedMods.length;
 
     if (selectedMods.length === 0) {
-        addedList.innerHTML = `<p class="text-gray-500 text-xs text-center py-8">No has añadido mods aún.</p>`;
+        addedList.innerHTML = `<p class="text-gray-500 text-xs text-center py-8">No has añadido mods desde el buscador.</p>`;
         return;
     }
 
@@ -257,13 +255,20 @@ function removeMod(index) {
     updateAddedList();
 }
 
-// GESTIÓN DE ANEXOS / OVERRIDES (ARCHIVOS Y CARPETAS LOCALES)
+// GESTIÓN ROBUSTA DE ANEXOS / OVERRIDES (ARCHIVOS Y CARPETAS LOCALES)
 function handleFiles(files) {
     for (let file of files) {
-        // Formatear la ruta relativa limpia dentro de /overrides/
         let relativePath = file.webkitRelativePath || file.name;
-        
-        // Evitar duplicados por ruta
+
+        // Normalizar separadores de directorio a "/"
+        relativePath = relativePath.replace(/\\/g, '/');
+
+        // Si es un archivo .jar suelto sin carpeta previa, rutarlo a mods/
+        if (file.name.endsWith('.jar') && !relativePath.includes('/')) {
+            relativePath = `mods/${file.name}`;
+        }
+
+        // Evitar duplicados por ruta de archivo
         if (!localOverrides.some(o => o.path === relativePath)) {
             localOverrides.push({
                 path: relativePath,
@@ -325,17 +330,17 @@ dropZone.addEventListener('drop', (e) => {
 fileInputFolder.addEventListener('change', (e) => handleFiles(e.target.files));
 fileInputFiles.addEventListener('change', (e) => handleFiles(e.target.files));
 
-// BUSCADOR EVENT LISTENERS
 btnSearch.addEventListener('click', searchMods);
 searchInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') searchMods(); });
 
-// CONSTRUIDOR Y EXPORTADOR DEL ARCHIVO .MRPACK
+// PROCESADOR Y EXPORTADOR BLINDADO (.MRPACK)
 btnExport.addEventListener('click', async () => {
     if (selectedMods.length === 0 && localOverrides.length === 0) {
-        alert("¡Tu pack está vacío! Añade al menos un mod de Modrinth o archivos locales en Overrides.");
+        alert("¡Tu pack está totalmente vacío! Añade mods de Modrinth o sube carpetas/archivos locales en Overrides.");
         return;
     }
 
+    const packStatus = document.getElementById('pack-status-badge');
     const packName = document.getElementById('pack-name').value.trim() || "Modpack";
     const packAuthor = document.getElementById('pack-author').value.trim() || "Sa1xp";
     const packVer = document.getElementById('pack-version').value.trim() || "1.0.0";
@@ -344,50 +349,76 @@ btnExport.addEventListener('click', async () => {
     const summary = document.getElementById('pack-summary').value.trim() || `Modpack por ${packAuthor}`;
     const customLoaderVer = document.getElementById('loader-version').value.trim();
 
-    const zip = new JSZip();
+    packStatus.innerText = "Empaquetando en segundo plano...";
+    btnExport.disabled = true;
+    btnExport.classList.add('opacity-50', 'cursor-not-allowed');
 
-    // 1. Estructura estándar del índice del Modpack (modrinth.index.json)
-    const indexJson = {
-        formatVersion: 1,
-        game: "minecraft",
-        versionId: packVer,
-        name: packName,
-        summary: summary,
-        files: selectedMods.map(mod => ({
-            path: `mods/${mod.filename}`,
-            hashes: {
-                sha1: mod.hashes.sha1,
-                sha256: mod.hashes.sha256
-            },
-            env: {
-                client: "required",
-                server: "required"
-            },
-            downloads: [mod.downloadUrl],
-            fileSize: mod.size
-        })),
-        dependencies: {
-            minecraft: mcVersion
+    try {
+        const zip = new JSZip();
+
+        // 1. Crear manifest (modrinth.index.json)
+        const indexJson = {
+            formatVersion: 1,
+            game: "minecraft",
+            versionId: packVer,
+            name: packName,
+            summary: summary,
+            files: selectedMods.map(mod => ({
+                path: `mods/${mod.filename}`,
+                hashes: {
+                    sha1: mod.hashes.sha1,
+                    sha256: mod.hashes.sha256
+                },
+                env: {
+                    client: "required",
+                    server: "required"
+                },
+                downloads: [mod.downloadUrl],
+                fileSize: mod.size
+            })),
+            dependencies: {
+                minecraft: mcVersion
+            }
+        };
+
+        indexJson.dependencies[loader] = customLoaderVer || "recommended";
+        zip.file("modrinth.index.json", JSON.stringify(indexJson, null, 2));
+
+        // 2. Procesamiento asíncrono y seguro de archivos locales (/overrides/)
+        const overridesFolder = zip.folder("overrides");
+        let processedFiles = 0;
+        let skippedFiles = 0;
+
+        for (const item of localOverrides) {
+            try {
+                // Lectura explicita de ArrayBuffer para evitar 'NotFoundError' por referencias perdidas
+                const arrayBuffer = await item.file.arrayBuffer();
+                overridesFolder.file(item.path, arrayBuffer);
+                processedFiles++;
+            } catch (fileErr) {
+                console.warn(`[PackCraft Warning] No se pudo leer el archivo local: ${item.path}`, fileErr);
+                skippedFiles++;
+            }
         }
-    };
 
-    // Asignar versión exacta o recomendada del Loader seleccionado
-    indexJson.dependencies[loader] = customLoaderVer || "recommended";
+        if (skippedFiles > 0) {
+            alert(`Aviso: ${skippedFiles} archivo(s) no pudieron ser leídos del disco y fueron omitidos, pero el resto se empaquetó correctamente.`);
+        }
 
-    // Escribir el manifest principal
-    zip.file("modrinth.index.json", JSON.stringify(indexJson, null, 2));
-
-    // 2. Empaquetar archivos locales subidos dentro de la carpeta /overrides/
-    const overridesFolder = zip.folder("overrides");
-    localOverrides.forEach(item => {
-        overridesFolder.file(item.path, item.file);
-    });
-
-    // 3. Generar archivo .mrpack ejecutable al instante desde el navegador
-    zip.generateAsync({ type: "blob" }).then((content) => {
+        // 3. Generar blob del archivo comprimido
+        const content = await zip.generateAsync({ type: "blob" });
         const link = document.createElement("a");
         link.href = URL.createObjectURL(content);
         link.download = `${packName.toLowerCase().replace(/\s+/g, '-')}-${packVer}.mrpack`;
         link.click();
-    });
+
+        packStatus.innerText = "¡Exportado con éxito!";
+    } catch (err) {
+        console.error("Error al empaquetar .mrpack:", err);
+        alert("Ocurrió un error inesperado al comprimir el modpack. Revisa la consola.");
+        packStatus.innerText = "Error de empaquetado";
+    } finally {
+        btnExport.disabled = false;
+        btnExport.classList.remove('opacity-50', 'cursor-not-allowed');
+    }
 });
